@@ -1,0 +1,649 @@
+/*
+ MODULE 1 of JEROEN'S DOMOTICA-PROJECT
+/*  The code below is my first ESP-project and based on the AdvancedWebserver lib.. I've tried to combine as many I/O facilities 
+ *   as I might need, just to get an idea of the capabilities of the chip... The big advantage of this code is that there is a feedback on the outputs!!!
+ *   So after your command you can check if the pin is aqctualy high or low!
+ *   Not being a professional programmer, but an electronics engineer (1972....) I like it!
+ *   What things nowedays can do...
+ *   
+ *   The code includes temperature, humidity, pressure, lux, sensing and a four chanel ADC (ADS1115) and a small LCD device for local outputs.
+ *   It is a very simpel and stabel way of sensing and acuating through a local web page using your local network.
+ *   
+ *   By playing around one discovers... I'm still playing so the code is not formaly perfect and lean but it works in a stabel way!
+ *   
+ *   Html page 192.168.2.50 displays the values and 192.168.2.50/socket1On displays the commands
+ *   
+ *   There is a software ESP-RESTART function implemented. Activation is possible on command (via the web) but that implies a connection of course
+ *   and is only sensible if a restart would correct an initialisation problem (f.i. sensors) or resetting variables...
+ *   and from a software error (not implemented yet) and from a hardware (interrupt?) situation.
+ *   These two options are not yet implemented not yet implemented.
+ *   
+ *   In the code below I used digitalWrite in the loop-code, 
+ *   but analogWrite can be used as well if there is an need for PWM
+
+ *   f.i.
+ *   ADC=analogRead(A0);
+ *   analogWrite(gpio5_pin,ADC);
+ *   PWM1=ADC; 
+ *   
+ *   *   The pins for I2C can be defined by f.i. Wire.begin(12,13) where 12=SDA, 13=SCL
+ *   Nu nog zorgen dat de unit via m'n site is uit te lezen...
+ */
+
+#include <ESP8266WiFi.h>
+#include <WiFiClient.h>
+#include <ESP8266WebServer.h>
+#include <ESP8266mDNS.h>
+#include <Wire.h>//I2C pint worden gedefinieerd bij setup: Wire.begin(12,13);
+#include <DHT_U.h>
+#include <Adafruit_BMP085_U.h>
+#include <Adafruit_ADS1015.h>
+#include <SPI.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+#define DHTPIN 14         // Pin which is connected to the DHT sensor. 
+#define DHTTYPE DHT22     // DHT 22 (AM2302)//It also converts the pin-table, so no need to worry about that!
+#define OLED_RESET 0
+
+Adafruit_SSD1306 display(OLED_RESET);
+Adafruit_ADS1115 ads;
+DHT_Unified dht(DHTPIN, DHTTYPE);
+Adafruit_BMP085_Unified bmp = Adafruit_BMP085_Unified(10085);
+
+const char *ssid = "YOUR LOCAL WIFI CONNECTION";
+const char *password = "WIFI PASSWORD";
+ESP8266WebServer server ( 80 );
+String webPage = "";
+
+int BaudRate=115200;
+
+uint32_t delayMS;
+
+int gpio0_pin = 0;//Output A
+int gpio2_pin = 2;//Output B
+int gpio4_pin = 4;//Output C
+int gpio5_pin = 5;//Output D
+    //int gpio14_pin=14; //Used for DTH22!
+int gpio15_pin=15;//must be GND on boot, so perhaps not clever to use...
+int gpio16_pin=16;//Output E
+    //int GPIO_pin=12 en ....13 zijn gebruikt voor I2C interface (AD converter en bmp180)
+
+int GPIO0=0;//The declared variables in the code for the digital outputs; A, B,C, D and E
+int GPIO2=0;
+int GPIO4=0;
+int GPIO5=0;
+int GPIO15=0;
+int GPIO16=0;
+
+int MaxTemp=-100;//The declared variabeles for the feedback in the HTML code, respresenting DHT-22 values.
+int MinTemp=99;
+int ActTemp=99;
+float ActTempf;
+int MaxHum=00;
+int MinHum=99;
+int ActHum=00;
+float ActHumf;
+int MaxPres=00;
+int MinPres=3000;
+int ActPres=00;
+float ActPresf;
+int MaxADC=00;
+int MinADC=1024;
+int ADC;// ADC op ESP8266
+int sensorValue;//ADC-OUT
+int adc0;// 4x 16-bit analog inputs op ADS1115
+int adc1;
+int adc2;
+int adc3;
+
+int I=0; // display-keuze integer in loop. Om de web-afhandeling sneller te maken worden alle display-omschakelingen voorafgegaan door web-afhandeling. 
+///////////////////////////////////////////////////////////
+
+void handleRoot() {
+      //Get analog values weet niet waarom het hier moet staan, want in de loop werkt niet!
+      int16_t adc0,adc1,adc2,adc3;
+      adc0=ads.readADC_SingleEnded(0);
+      adc1=ads.readADC_SingleEnded(1);
+      adc2=ads.readADC_SingleEnded(2);
+      adc3=ads.readADC_SingleEnded(3);
+      
+	char temp[900];
+	int sec = millis() / 1000;
+	int min = sec / 60;
+	int hr = min / 60;
+  int dag = hr / 24;
+  int jaar = dag / 365;
+  
+	snprintf ( temp, 900,//Define how many characters in the HTML-page must be displayed.
+// Vergeet niet om bij de HTML--weergave van variabelen, ze zowel in de declaratie alsook te vermelden in de body EN in de lijst aansluitend op de HTML-code
+
+"<html>\
+  <head>\
+    <meta http-equiv='refresh' content='9'/>\
+    <title>WatchDog Jeroen</title>\
+    <style>\
+      body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+    </style>\
+  </head>\
+  <body>\
+    <h3>TERUGKOPPELING MOD1 Jeroen</h3>\
+     <p>Actief sinds: %02d jaren: %02d dagen : %02d uren :%02d minuten :%02d seconden<BR>\
+     <h4>PWM uitgangen:</h4>\
+     Uitg A: %02d % tekst<BR>Uitg B: %02d % tekst<BR>Uitg C: %02d % tekst<BR>Uitg D: %02d % tekst<BR>Uitg E: %02d % tekst\
+     <h4>Lichtmeting (0 is donker 1024 is licht) Nu: %02d:</h4>\ Max: %02d, Min: %20d\     
+     <h4>Relatieve Vochtigheid Nu: %02d %</h4>\ Max: %02d %, Min: %02d %\
+     <h4>Temperatuur Nu: %02d *C</h4>\ Max: %02d *C, Min: %02d *C\
+     <h4>Luchtdruk Nu: %02d hPa</h4>\ Max: %02d hPa, Min: %02d hPa\ </p>\
+     <h4>Analoge ingangen:</h4>\ Ingang 0: %02d tekst <BR> Ingang 1: %02d tekst <BR> Ingang 2: %02d tekst <BR> Ingang 3: %02d tekst\ </p>\
+  </body>\
+</html>",
+
+      jaar, dag % 365, hr % 24, min % 60, sec % 60, GPIO0, GPIO2, GPIO4, GPIO5, GPIO16, ADC, MaxADC, MinADC,  ActHum, MaxHum, MinHum, ActTemp, MaxTemp, MinTemp, ActPres, MaxPres, MinPres, adc0, adc1, adc2, adc3
+   );
+   server.send ( 200, "text/html", temp );
+}
+
+//////////////////////////////////////////////////////////
+void soft_reset(){
+  // Use GPIO0 pull-up resistor!!! The code simulates the hardware procedure for a reset... just "ESP.reset();" should do the job in any code...
+int RESET_PIN = GPIO16;
+pinMode(RESET_PIN, OUTPUT);
+pinMode (GPIO0, OUTPUT);
+pinMode(GPIO0, HIGH);
+pinMode(GPIO15, OUTPUT);
+pinMode(GPIO15,LOW);
+digitalWrite(RESET_PIN, LOW);
+digitalWrite(RESET_PIN, HIGH);
+ESP.restart();
+}
+
+
+void limit_reset(){
+   MaxTemp=-100;
+   MinTemp=99;
+   MaxHum=00;
+   MinHum=99;
+   MaxPres=00;
+   MinPres=3000;
+   MaxADC=00;
+   MinADC=1024;
+}
+
+//////////////////////////////////////////////////////////
+void setup ( void ) {
+  
+    Wire.begin(12,13);//Set SDA en SCL-pins for wire-lib (default in ESP8266 is 2,14);
+    display.begin(SSD1306_SWITCHCAPVCC, 0x3C);  // initialize with the I2C addr 0x3D (for the 128x64)
+    WiFi.begin ( ssid, password );   
+    Serial.begin(BaudRate); 
+        
+  display.clearDisplay();  
+
+  WiFi.config(IPAddress(192,168,2,50 ), IPAddress(192,168,2,254), IPAddress(255,255,255,0));
+	Serial.println ( "" );
+	while ( WiFi.status() != WL_CONNECTED ) {
+		delay ( 500 );
+		Serial.print ( "." );
+	}
+
+	Serial.println ( "" );
+	Serial.print ( "Connected to " );
+	Serial.println ( ssid );
+	Serial.print ( "IP address: " );
+	Serial.println ( WiFi.localIP() );
+
+	if ( MDNS.begin ( "esp8266" ) ) {
+		Serial.println ( "MDNS responder started" );
+	}
+
+	server.on ( "/", handleRoot );
+
+	server.begin();
+	Serial.println ( "HTTP server started" );
+  ads.begin();
+
+  if (!bmp.begin()) {
+  Serial.println("Could not find a valid BMP085 sensor, check wiring!");
+  while (1) {}
+ }
+  dht.begin();
+
+  Serial.println("DHTxx Unified Sensor Example");
+  // Print temperature sensor details.
+  sensor_t sensor;
+  dht.temperature().getSensor(&sensor);
+  Serial.println("------------------------------------");
+  Serial.println("Temperature");
+  Serial.print  ("Sensor:       "); Serial.println(sensor.name);
+  Serial.print  ("Driver Ver:   "); Serial.println(sensor.version);
+  Serial.print  ("Unique ID:    "); Serial.println(sensor.sensor_id);
+  Serial.print  ("Max Value:    "); Serial.print(sensor.max_value); Serial.println(" *C");
+  Serial.print  ("Min Value:    "); Serial.print(sensor.min_value); Serial.println(" *C");
+  Serial.print  ("Resolution:   "); Serial.print(sensor.resolution); Serial.println(" *C");  
+  Serial.println("------------------------------------");
+  // Print humidity sensor details.
+  dht.humidity().getSensor(&sensor);
+  Serial.println("------------------------------------");
+  Serial.println("Humidity");
+  Serial.print  ("Sensor:       "); Serial.println(sensor.name);
+  Serial.print  ("Driver Ver:   "); Serial.println(sensor.version);
+  Serial.print  ("Unique ID:    "); Serial.println(sensor.sensor_id);
+  Serial.print  ("Max Value:    "); Serial.print(sensor.max_value); Serial.println("%");
+  Serial.print  ("Min Value:    "); Serial.print(sensor.min_value); Serial.println("%");
+  Serial.print  ("Resolution:   "); Serial.print(sensor.resolution); Serial.println("%");  
+  Serial.println("------------------------------------");
+  // Set delay between sensor readings based on sensor details.
+  delayMS = sensor.min_delay / 1500;
+// Print Pressure Sensor details
+    bmp.getSensor(&sensor);
+  Serial.println("------------------------------------");
+  Serial.print  ("Sensor:       "); Serial.println(sensor.name);
+  Serial.print  ("Driver Ver:   "); Serial.println(sensor.version);
+  Serial.print  ("Unique ID:    "); Serial.println(sensor.sensor_id);
+  Serial.print  ("Max Value:    "); Serial.print(sensor.max_value); Serial.println(" hPa");
+  Serial.print  ("Min Value:    "); Serial.print(sensor.min_value); Serial.println(" hPa");
+  Serial.print  ("Resolution:   "); Serial.print(sensor.resolution); Serial.println(" hPa");  
+  Serial.println("------------------------------------");
+  Serial.println("");
+// Print de waarden van de AD-Converter
+  Serial.print ("ADC0:  "); Serial.println(adc0);
+  Serial.print ("ADC1:  "); Serial.println(adc1);
+  Serial.print ("ADC2:  "); Serial.println(adc2);
+  Serial.print ("ADC3:  "); Serial.println(adc3);
+//In the next code analog & digital is a bit mixed up for demo purpose... So, select what you need and throw away the other code...
+
+  webPage += "<h3>AANSTURING MOD1 Jeroen</h3><p>Uitg A <a href=\"socket1On\"><button>AAN</button></a>&nbsp;<a href=\"socket1Off\"><button>UIT</button></a><a href=\"socket1plu\"><button>+++</button></a>&nbsp;<a href=\"socket1min\"><button>---</button></a></p>";
+  webPage += "<p>Uitg B <a href=\"socket2On\"><button>AAN</button></a>&nbsp;<a href=\"socket2Off\"><button>UIT</button></a><a href=\"socket2plu\"><button>+++</button></a>&nbsp;<a href=\"socket2min\"><button>---</button></a></p>";
+  webPage += "<p>Uitg C <a href=\"socket3On\"><button>AAN</button></a>&nbsp;<a href=\"socket3Off\"><button>UIT</button></a><a href=\"socket3plu\"><button>+++</button></a>&nbsp;<a href=\"socket3min\"><button>---</button></a></p>";
+  webPage += "<p>Uitg D <a href=\"socket4On\"><button>AAN</button></a>&nbsp;<a href=\"socket4Off\"><button>UIT</button></a><a href=\"socket4plu\"><button>+++</button></a>&nbsp;<a href=\"socket4min\"><button>---</button></a></p>";
+  webPage += "<p>Uitg E <a href=\"socket5On\"><button>AAN</button></a>&nbsp;<a href=\"socket5Off\"><button>UIT</button></a><a href=\"socket5plu\"><button>+++</button></a>&nbsp;<a href=\"socket5min\"><button>---</button></a></p>";   
+  webPage += "<p><a href=\"socket6On\"><button>Total reset</button></a>&nbsp;</p>";   
+  webPage += "<p><a href=\"socket7On\"><button>Limits-reset</button></a>&nbsp;</p>";   
+
+  
+  // preparing GPIOs (Setting pins to Digital-output at value 0)
+  pinMode(gpio0_pin, OUTPUT);
+  digitalWrite(gpio0_pin, LOW);
+  pinMode(gpio2_pin, OUTPUT);
+  digitalWrite(gpio2_pin, LOW);
+  pinMode(gpio4_pin, OUTPUT);
+  digitalWrite(gpio4_pin, LOW);
+  pinMode(gpio5_pin, OUTPUT);
+  digitalWrite(gpio5_pin, LOW);
+  pinMode(gpio16_pin, OUTPUT);
+  digitalWrite(gpio16_pin, LOW);
+  analogWriteRange(100);
+
+// Weet niet waarom onderstaand niet een functie (VOID) o.i.d. staat...
+// Zodra je +++ en --- gaat gebruiken werken de AAN/UIT Buttons niet meer
+  server.on("/", [](){
+    server.send(200, "text/html", webPage);
+  });
+  server.on("/socket1On", [](){
+    server.send(200, "text/html", webPage);
+    analogWrite(gpio0_pin, 100);
+    GPIO0=100;
+  });
+  server.on("/socket1Off", [](){
+    server.send(200, "text/html", webPage);
+    analogWrite(gpio0_pin, 0);
+    GPIO0 = 0;
+  });
+  server.on("/socket1plu", [](){
+    server.send(200, "text/html", webPage);
+    if (GPIO0<100){
+      GPIO0=GPIO0+1;}
+    analogWrite(gpio0_pin, GPIO0);
+  });
+  server.on("/socket1min", [](){
+    server.send(200, "text/html", webPage);
+    if (GPIO0>0){
+      GPIO0=GPIO0-1;}
+    analogWrite(gpio0_pin, GPIO0);
+  });
+  server.on("/socket2On", [](){
+    server.send(200, "text/html", webPage);
+    analogWrite(gpio2_pin, 1023);
+    GPIO2 = 100;
+  });
+  server.on("/socket2Off", [](){
+    server.send(200, "text/html", webPage);
+    analogWrite(gpio2_pin, 0);
+    GPIO2 = 0;
+  });
+  server.on("/socket2plu", [](){
+    server.send(200, "text/html", webPage);
+    if (GPIO2<255){
+      GPIO2=GPIO2+1;}
+    analogWrite(gpio2_pin, GPIO2*10);
+  });
+  server.on("/socket2min", [](){
+    server.send(200, "text/html", webPage);
+    if (GPIO2>0){
+      GPIO2=GPIO2-1;}
+    analogWrite(gpio2_pin, GPIO2*10);
+  });
+  server.on("/socket3On", [](){
+    server.send(200, "text/html", webPage);
+    analogWrite(gpio4_pin, 1023);
+    GPIO4 = 100;
+  });
+  server.on("/socket3Off", [](){
+    server.send(200, "text/html", webPage);
+    analogWrite(gpio4_pin, 0);
+    GPIO4 = 0;
+  });
+  server.on("/socket3plu", [](){
+    server.send(200, "text/html", webPage);
+    if (GPIO4<255){
+      GPIO4=GPIO4+1;}
+    analogWrite(gpio4_pin, GPIO4*10);
+  });
+  server.on("/socket3min", [](){
+    server.send(200, "text/html", webPage);
+    if (GPIO4>0){
+      GPIO4=GPIO4-1;}
+    analogWrite(gpio4_pin, GPIO4*10);
+  });
+  server.on("/socket4On", [](){
+    server.send(200, "text/html", webPage);
+    analogWrite(gpio5_pin, 1023);
+    GPIO5 = 100;
+  });
+  server.on("/socket4Off", [](){
+    server.send(200, "text/html", webPage);
+    analogWrite(gpio5_pin, 0);
+    GPIO5 = 0;
+  });
+  server.on("/socket4plu", [](){
+    server.send(200, "text/html", webPage);
+    if (GPIO5<255){
+      GPIO5=GPIO5+1;}
+    analogWrite(gpio5_pin, GPIO5*10);
+  });
+  server.on("/socket4min", [](){
+    server.send(200, "text/html", webPage);
+    if (GPIO5>0){
+      GPIO5=GPIO5-1;}
+    analogWrite(gpio5_pin, GPIO5*10);
+  });
+  server.on("/socket5On", [](){
+    server.send(200, "text/html", webPage);
+    analogWrite(gpio16_pin, 1023);
+    GPIO16 = 100;
+  });
+  server.on("/socket5Off", [](){
+    server.send(200, "text/html", webPage);
+    analogWrite(gpio16_pin, 0);
+    GPIO16 = 0;
+  });
+    server.on("/socket5plu", [](){
+    server.send(200, "text/html", webPage);
+    if (GPIO16<255){
+      GPIO16=GPIO16+1;
+    analogWrite(gpio16_pin, GPIO16*10);}
+    else {analogWrite(gpio16_pin,1023);}
+  });
+  server.on("/socket5min", [](){
+    server.send(200, "text/html", webPage);
+    if (GPIO16>0){
+      GPIO16=GPIO16-1;
+    analogWrite(gpio16_pin, GPIO16*10);}
+    else {analogWrite(gpio16_pin,0);}
+  });
+  server.on("/socket6On", [](){
+    server.send(200, "text/html", webPage);
+    soft_reset();
+  });
+    server.on("/socket7On", [](){
+    server.send(200, "text/html", webPage);
+    limit_reset();
+
+  });
+  server.begin();
+  Serial.println("HTTP server started");
+
+  ads.begin();
+}
+
+//////////////////////////////////////////////////////////
+
+
+void Temp(){
+    display.clearDisplay();
+    display.setTextColor(WHITE);
+    display.setCursor(0,0);
+    display.setTextSize(1);
+    display.println("     TEMPERATUUR *C");
+    display.setTextSize(3);
+    display.setCursor(20,12);
+    display.println(ActTempf);
+    display.display();
+      server.handleClient();
+delay(2000);
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setCursor(0,0);
+    display.println("Min.  / Max.   (24h)");
+    display.setTextSize(3);
+    display.setCursor(5,12);
+    display.println(MinTemp);
+    display.setCursor(65,12);
+    display.println(MaxTemp);
+    display.display();
+      server.handleClient();
+delay (2000);
+}
+void Hum(){
+    display.clearDisplay();
+    display.setCursor(0,0);
+    display.setTextSize(1);
+    display.println("Lucht Vochtigheid o/o");
+    display.setTextSize(3);
+    display.setCursor(20,12);
+    display.println(ActHumf);
+    display.display();
+      server.handleClient();
+delay (2000);
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setCursor(0,0);
+    display.println("Min.  /  Max.  (24h)");
+    display.setTextSize(3);
+    display.setCursor(5,12);
+    display.println(MinHum); 
+    display.setCursor(65,12);
+    display.println(MaxHum);
+    display.display();
+      server.handleClient();
+delay (2000);
+}
+void Pres(){ 
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setCursor(0,0);
+    display.println("    Luchtdruk hPa");
+    display.setTextSize(2);
+    display.setCursor(20,12);
+    display.println(ActPresf);
+    display.display();
+      server.handleClient();
+delay (2000);
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setCursor(0,0);
+    display.println("Min.  /  Max.  (24h)");
+    display.setTextSize(2);
+    display.setCursor(0,12);
+    display.println(MinPres);
+    display.setCursor(65,12);
+    display.println(MaxPres);
+    display.display();
+      server.handleClient();
+  delay(1500);
+}
+void IO(){
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setCursor(0,0);
+    display.println("Dig. In/Out PWM");
+    display.setTextSize(1);
+    display.setCursor(0,8);
+    display.println("1:");
+    display.setCursor(25,8);
+    display.println(GPIO0); 
+    display.setCursor(0,16);  
+    display.println("2:");
+    display.setCursor(25,16);
+    display.print(GPIO2);
+    display.setCursor(0,24);
+    display.println("3:");
+    display.setCursor(25,24);    
+    display.print(GPIO4);
+    display.setCursor(65,8);
+    display.println("4:");
+    display.setCursor(95,8);
+    display.print(GPIO5);  
+    display.setCursor(65,16);
+    display.println("5:");
+    display.setCursor(95,16);
+    display.print(GPIO16);
+    display.display();
+      server.handleClient();
+    delay(3000);
+}
+void analog(){
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setCursor(0,0);
+    display.println("Analog Input Status");
+    display.setCursor(0,8);
+    display.println("ADConChip:");
+    display.setCursor(65,8);
+    display.println(ADC); 
+    display.setCursor(0,16);  
+    display.println("1:");
+    display.setCursor(20,16);
+    display.print(adc0);
+    display.setCursor(0,24);
+    display.println("2:");
+    display.setCursor(20,24);    
+    display.print(adc1);
+    display.setCursor(55,16);
+    display.println("3:");
+    display.setCursor(80,16);
+    display.print(adc2);  
+    display.setCursor(55,24);
+    display.println("4:");
+    display.setCursor(80,24);
+    display.print(adc3);
+    display.display();
+      server.handleClient();
+    delay(3000);
+}
+
+
+//////////////////////////////////////////////////////////
+void loop ( void ) {
+  handleRoot();
+  server.handleClient();
+  I=I+1;
+  if (I=1){
+    Temp();
+    }
+  if (I=2){
+      Hum();
+    }
+  if (I=3){
+      Pres();
+    }
+  if (I=4){
+      IO();
+  if (I=5){
+      analog();
+    }
+    I=0;
+server.handleClient();
+//////////////////////
+
+    //  Get Pressure event
+sensors_event_t event;  
+bmp.getEvent(&event);
+
+    ActPresf=(event.pressure);
+    ActPres=ActPresf;
+    if(ActPres > MaxPres){
+      MaxPres=ActPres;
+      }
+    if (MaxPres > 1100){
+      MaxPres = 0;
+    }
+      else
+      if(ActPres < MinPres){
+        MinPres=ActPres;  
+      }
+server.handleClient();
+//////////////////////
+
+    // Get humidity event and print its value.
+dht.humidity().getEvent(&event);
+
+    ActHumf=(event.relative_humidity);
+    ActHum=ActHumf;
+    if(ActHum > MaxHum){
+      MaxHum=ActHum;
+    }
+    if (MaxHum > 100){
+      MaxHum=0;
+    }
+    else
+    if(ActHum < MinHum){
+      MinHum=ActHum;
+    }
+server.handleClient();
+//////////////////////
+      
+   ADC=1024-analogRead(A0);
+   if(ADC<MinADC){
+    MinADC=ADC;
+   }
+   if (MaxADC>1023){
+    MaxADC=0;
+   }
+   if (MinADC<0){
+    MinADC=1023;
+   }
+   if (ADC>MaxADC){
+    MaxADC=ADC;
+   }  
+server.handleClient();
+ //////////////////////
+    // Get temperature event and print its value.
+
+dht.temperature().getEvent(&event);
+
+    ActTempf=(event.temperature);
+    ActTemp=ActTempf;
+    if(ActTemp > MaxTemp){
+      MaxTemp=ActTemp;
+    }
+    if(MaxTemp > 100) {
+      MaxTemp = -100;
+    }
+      else
+      if(ActTemp < MinTemp){
+        MinTemp=ActTemp;
+    }
+server.handleClient();
+      adc0=ads.readADC_SingleEnded(0);
+      adc1=ads.readADC_SingleEnded(1);
+      adc2=ads.readADC_SingleEnded(2);
+      adc3=ads.readADC_SingleEnded(3);
+analog();
+
+server.handleClient();
+}
+}
+
+//////////////////////////////////////////////////////////
