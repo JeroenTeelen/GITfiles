@@ -1,7 +1,7 @@
 /*
  MODULE 1 of JEROEN'S DOMOTICA-PROJECT
 /*  The code below is my first ESP-project and based on the AdvancedWebserver lib.. I've tried to combine as many I/O facilities 
- *   as I might need, just to get an idea of the capabilities of the chip... The big advantage of this code is that there is a feedback on the outputs!!!
+ *   as I might need, just to get an idea of the capabilities of the chip... The big advantage of this code is that there is a web-feedback on the outputs!!!
  *   So after your command you can check if the pin is aqctualy high or low!
  *   Not being a professional programmer, but an electronics engineer (1972....) I like it!
  *   What things nowedays can do...
